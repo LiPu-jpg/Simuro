@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>uav_combat_control</name>
+  <version>0.3.4</version>
+  <description>Example offboard controllers for uav_combat_sim.</description>
+  <maintainer email="noreply@liuyaorobot.com">LiuyaoRobot</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>ament_index_python</depend>
+  <depend>cv_bridge</depend>
+  <depend>geometry_msgs</depend>
+  <depend>px4_msgs</depend>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-pyzbar</exec_depend>
+  <exec_depend>uav_combat_sim</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
