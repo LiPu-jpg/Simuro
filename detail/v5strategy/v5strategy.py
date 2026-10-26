@@ -58,6 +58,12 @@ def _safe_own_area(x, y):
     return x, y
 
 
+def _safe_own_penalty(x, y):
+    if x >= 30.0 and abs(y) <= 17.5:
+        x = 28.0
+    return x, y
+
+
 def _update_ball_history(ball):
     ball_history.append((ball.x, ball.y))
     if len(ball_history) > 8:
@@ -403,6 +409,7 @@ def _support_action(world, index, chaser):
         return ("move", support_x, support_y, 120.0)
     target_x = _clamp(ball_x + 20.0, 25.0, 60.0)
     target_y = _clamp(ball_y * 0.5, -25.0, 25.0)
+    target_x, target_y = _safe_own_penalty(target_x, target_y)
     target_x, target_y = _safe_own_area(target_x, target_y)
     return ("move", target_x, target_y, 120.0)
 
