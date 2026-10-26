@@ -63,28 +63,28 @@ class FlightStrategyNode(Node):
         self.strategy_mode = str(
             self.declare_parameter('strategy_mode', 'pursuit').value)
         self.target_altitude = float(
-            self.declare_parameter('altitude', 1.5).value)
+            self.declare_parameter('altitude', 1.45).value)
         self.horizontal_speed = float(
-            self.declare_parameter('horizontal_velocity', 0.6).value)
+            self.declare_parameter('horizontal_velocity', 0.8).value)
         self.circle_radius = float(self.declare_parameter('radius', 2.0).value)
         self.orientation_mode = int(
             self.declare_parameter('orientation_mode', 1).value)
         self.orbit_laps = float(
             self.declare_parameter('orbit_laps', 0.25).value)
         self.takeoff_hold_sec = float(
-            self.declare_parameter('takeoff_hold_sec', 4.0).value)
+            self.declare_parameter('takeoff_hold_sec', 0.5).value)
         self.scan_role_duration_sec = float(
             self.declare_parameter('scan_role_duration_sec', 45.0).value)
         self.scan_follow_distance = float(
-            self.declare_parameter('scan_follow_distance', 1.1).value)
+            self.declare_parameter('scan_follow_distance', 1.0).value)
         self.scan_approach_velocity = float(
-            self.declare_parameter('scan_approach_velocity', 0.7).value)
+            self.declare_parameter('scan_approach_velocity', 0.9).value)
         self.minimum_opponent_clearance = float(
             self.declare_parameter(
-                'scan_minimum_opponent_clearance', 0.9).value)
+                'scan_minimum_opponent_clearance', 0.85).value)
         self.opponent_slowdown_distance = float(
             self.declare_parameter(
-                'scan_opponent_slowdown_distance', 1.8).value)
+                'scan_opponent_slowdown_distance', 1.6).value)
         self.obstacle_clearance_radius = float(
             self.declare_parameter(
                 'center_obstacle_clearance_radius', 0.8).value)
@@ -94,7 +94,7 @@ class FlightStrategyNode(Node):
         self.scan_waypoint_tolerance = float(
             self.declare_parameter('scan_waypoint_tolerance', 0.15).value)
         self.enemy_prediction_horizon = float(
-            self.declare_parameter('enemy_prediction_horizon', 0.45).value)
+            self.declare_parameter('enemy_prediction_horizon', 0.5).value)
         self.enemy_pose_timeout = float(
             self.declare_parameter('enemy_pose_timeout', 0.6).value)
         self.enemy_velocity_smoothing = float(
@@ -112,7 +112,7 @@ class FlightStrategyNode(Node):
         self.scan_timeout_sec = float(
             self.declare_parameter('scan_timeout_sec', 90.0).value)
         self.minimum_altitude = float(
-            self.declare_parameter('minimum_altitude', 1.35).value)
+            self.declare_parameter('minimum_altitude', 1.3).value)
         self.maximum_altitude = float(
             self.declare_parameter('maximum_altitude', 2.5).value)
         self.scan_route_refresh_sec = float(
@@ -335,7 +335,13 @@ class FlightStrategyNode(Node):
     def submit_callback(self, message):
         self.last_submit_at = self.steady_seconds()
         self.last_submit_payload = message.data
-        self.get_logger().info(f'QR submitted: {message.data}')
+        elapsed = 0.0
+        if self.game_start_time is not None:
+            elapsed = (
+                self.get_clock().now() - self.game_start_time
+            ).nanoseconds / 1e9
+        self.get_logger().info(
+            f'QR submitted: {message.data} elapsed={elapsed:.2f}s')
 
     def reset_behaviors(self):
         self.scan_behavior.reset()
@@ -390,14 +396,10 @@ class FlightStrategyNode(Node):
             self.publish_setpoint(self.get_hover_setpoint())
             return
         if self.behavior_start_time is None:
-            # 到达目标高度后再进入比赛行为，避免延迟解锁时跳过起飞。
-            if self.current_pose.position.z < self.target_altitude - 0.1:
-                self.publish_setpoint(self.get_hover_setpoint())
-                return
             self.behavior_start_time = self.get_clock().now()
         if not self.active_announced:
             self.get_logger().info(
-                'Takeoff height reached, starting example strategy.')
+                'Strategy active; climbing and pursuing.')
             self.active_announced = True
 
         self.publish_setpoint(self.compute_strategy_setpoint())
