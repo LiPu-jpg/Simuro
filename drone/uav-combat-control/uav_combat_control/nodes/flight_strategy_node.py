@@ -25,7 +25,12 @@ from rclpy.qos import (
 )
 from std_msgs.msg import Bool
 
-from uav_combat_control.guidance import DuelPolicy, OrbitPath, SafetyEnvelope
+from uav_combat_control.guidance import (
+    CenterGuard,
+    DuelPolicy,
+    OrbitPath,
+    SafetyEnvelope,
+)
 
 
 def quaternion_heading(orientation):
@@ -61,7 +66,9 @@ class DuelRaceNode(Node):
         recovery_altitude = float(
             self.declare_parameter('recovery_altitude', 1.75).value)
         center_clearance = float(
-            self.declare_parameter('center_clearance', 1.05).value)
+            self.declare_parameter('center_clearance', 1.4).value)
+        center_escape = float(
+            self.declare_parameter('center_escape_radius', 2.0).value)
         enemy_clearance = float(
             self.declare_parameter('enemy_clearance', 0.85).value)
         enemy_vertical_range = float(
@@ -97,6 +104,7 @@ class DuelRaceNode(Node):
         self.command_at = None
         self.race_started = None
         self.race_announced = False
+        self.game_start_at = None
         self.wall_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self.orbit = OrbitPath(
             team_id=team_id,
@@ -115,6 +123,10 @@ class DuelRaceNode(Node):
             center_clearance=center_clearance,
             enemy_clearance=enemy_clearance,
             enemy_vertical_range=enemy_vertical_range,
+        )
+        self.center_guard = CenterGuard(
+            trigger_radius=center_clearance,
+            escape_radius=center_escape,
         )
         self.duel = DuelPolicy(
             engage_distance=engage_distance,
@@ -169,12 +181,14 @@ class DuelRaceNode(Node):
             self.phase = 'ground'
             self.race_started = None
             self.race_announced = False
+            self.game_start_at = time.monotonic()
             self.get_logger().info('Game started.')
         elif not message.data and self.game_started:
             self.game_started = False
             self.phase = 'ground'
             self.race_started = None
             self.race_announced = False
+            self.game_start_at = None
             self.get_logger().info('Game stopped.')
 
     def on_timer(self):
@@ -234,14 +248,14 @@ class DuelRaceNode(Node):
             self.race_started = now
         current = self.pose.position
         enemy = self.current_enemy(now)
-        recovery = self.safety.center_recovery(current.x, current.y)
+        own = (current.x, current.y, current.z)
+        recovery = self.center_guard.escape_target(current.x, current.y)
         if recovery is not None:
             self.publish(self.make_setpoint(
                 recovery[0], recovery[1], self.safety.recovery_altitude,
                 self.heading))
             return
         x, y, orbit_yaw = self.orbit.point(now - self.race_started)
-        own = (current.x, current.y, current.z)
         x, y = self.safety.avoid_enemy((x, y), own, enemy)
         x, y = self.safety.clamp(x, y)
         target_altitude = self.safety.altitude_recovery(
