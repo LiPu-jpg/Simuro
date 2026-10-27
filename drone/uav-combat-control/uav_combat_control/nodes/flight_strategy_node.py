@@ -63,10 +63,10 @@ class FlightStrategyNode(Node):
         self.strategy_mode = str(
             self.declare_parameter('strategy_mode', 'pursuit').value)
         self.target_altitude = float(
-            self.declare_parameter('altitude', 1.45).value)
+            self.declare_parameter('altitude', 1.35).value)
         self.horizontal_speed = float(
-            self.declare_parameter('horizontal_velocity', 0.8).value)
-        self.circle_radius = float(self.declare_parameter('radius', 2.0).value)
+            self.declare_parameter('horizontal_velocity', 1.0).value)
+        self.circle_radius = float(self.declare_parameter('radius', 1.3).value)
         self.orientation_mode = int(
             self.declare_parameter('orientation_mode', 1).value)
         self.orbit_laps = float(
@@ -78,7 +78,7 @@ class FlightStrategyNode(Node):
         self.scan_follow_distance = float(
             self.declare_parameter('scan_follow_distance', 1.0).value)
         self.scan_approach_velocity = float(
-            self.declare_parameter('scan_approach_velocity', 0.9).value)
+            self.declare_parameter('scan_approach_velocity', 1.0).value)
         self.minimum_opponent_clearance = float(
             self.declare_parameter(
                 'scan_minimum_opponent_clearance', 0.85).value)
@@ -110,7 +110,7 @@ class FlightStrategyNode(Node):
         self.post_submit_hold_sec = float(
             self.declare_parameter('post_submit_hold_sec', 10.0).value)
         self.scan_timeout_sec = float(
-            self.declare_parameter('scan_timeout_sec', 90.0).value)
+            self.declare_parameter('scan_timeout_sec', 20.0).value)
         self.minimum_altitude = float(
             self.declare_parameter('minimum_altitude', 1.3).value)
         self.maximum_altitude = float(
