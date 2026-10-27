@@ -25,10 +25,10 @@ from rclpy.qos import (
 )
 from std_msgs.msg import Bool
 
-from uav_combat_control.race import OrbitPlanner, RaceSafety
+from uav_combat_control.guidance import DuelPolicy, OrbitPath, SafetyEnvelope
 
 
-def heading_from_quaternion(orientation):
+def quaternion_heading(orientation):
     return math.atan2(
         2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
         1.0 - 2.0 * (
@@ -36,59 +36,58 @@ def heading_from_quaternion(orientation):
     )
 
 
-class GateRaceNode(Node):
+class DuelRaceNode(Node):
     def __init__(self):
         super().__init__(
             'flight_strategy_node',
             parameter_overrides=[Parameter('use_sim_time', value=True)],
         )
-        cruise_altitude = float(
-            self.declare_parameter('race_altitude', 1.35).value)
+        base_altitude = float(
+            self.declare_parameter('base_altitude', 1.55).value)
         takeoff_altitude = float(
-            self.declare_parameter('takeoff_altitude', 1.5).value)
-        takeoff_height = float(
-            self.declare_parameter('takeoff_height', 1.15).value)
-        orbit_radius = float(
-            self.declare_parameter('orbit_radius', 1.25).value)
-        orbit_speed = float(
-            self.declare_parameter('orbit_speed', 1.0).value)
+            self.declare_parameter('takeoff_altitude', 1.75).value)
+        takeoff_threshold = float(
+            self.declare_parameter('takeoff_threshold', 1.4).value)
+        radius = float(self.declare_parameter('orbit_radius', 1.4).value)
+        speed = float(self.declare_parameter('orbit_speed', 1.0).value)
         field_half_x = float(
             self.declare_parameter('field_half_x', 4.5).value)
         field_half_y = float(
             self.declare_parameter('field_half_y', 3.0).value)
         field_margin = float(
             self.declare_parameter('field_margin', 0.6).value)
-        minimum_flight_altitude = float(
-            self.declare_parameter('minimum_flight_altitude', 1.05).value)
+        floor_altitude = float(
+            self.declare_parameter('flight_floor', 1.3).value)
         recovery_altitude = float(
-            self.declare_parameter('recovery_altitude', 1.55).value)
+            self.declare_parameter('recovery_altitude', 1.75).value)
+        center_clearance = float(
+            self.declare_parameter('center_clearance', 1.05).value)
         enemy_clearance = float(
             self.declare_parameter('enemy_clearance', 0.85).value)
         enemy_vertical_range = float(
             self.declare_parameter('enemy_vertical_range', 0.45).value)
-        center_clearance = float(
-            self.declare_parameter('center_clearance', 1.0).value)
+        engage_distance = float(
+            self.declare_parameter('engage_distance', 2.5).value)
+        defense_vertical = float(
+            self.declare_parameter('defense_vertical', 0.6).value)
         enemy_timeout = float(
             self.declare_parameter('enemy_pose_timeout', 0.6).value)
 
-        if takeoff_altitude <= minimum_flight_altitude:
-            raise ValueError('takeoff altitude must exceed recovery altitude')
-        if cruise_altitude <= minimum_flight_altitude:
-            raise ValueError('race altitude must exceed flight minimum')
+        if not (floor_altitude < base_altitude < takeoff_altitude):
+            raise ValueError('altitude ordering is invalid')
 
         namespace = self.get_namespace().strip('/')
-        self.team_id = 2 if namespace.endswith('2') else 1
+        team_id = 2 if namespace.endswith('2') else 1
+        self.base_altitude = base_altitude
         self.takeoff_altitude = takeoff_altitude
-        self.takeoff_height = takeoff_height
-        self.cruise_altitude = cruise_altitude
+        self.takeoff_threshold = takeoff_threshold
         self.enemy_timeout = enemy_timeout
         self.phase = 'ground'
-        self.phase_started = None
         self.game_started = False
-        self.status = None
-        self.status_at = None
         self.armed = False
         self.offboard = False
+        self.status = None
+        self.status_at = None
         self.pose = None
         self.pose_at = None
         self.enemy = None
@@ -97,26 +96,31 @@ class GateRaceNode(Node):
         self.heartbeat_at = None
         self.command_at = None
         self.race_started = None
-        self.active_logged = False
+        self.race_announced = False
         self.wall_clock = Clock(clock_type=ClockType.STEADY_TIME)
-        self.planner = OrbitPlanner(
-            team_id=self.team_id,
-            radius=orbit_radius,
-            speed=orbit_speed,
-            altitude=cruise_altitude,
+        self.orbit = OrbitPath(
+            team_id=team_id,
+            radius=radius,
+            speed=speed,
             field_half_x=field_half_x,
             field_half_y=field_half_y,
-            field_margin=field_margin,
+            margin=field_margin,
         )
-        self.safety = RaceSafety(
+        self.safety = SafetyEnvelope(
             field_half_x=field_half_x,
             field_half_y=field_half_y,
             field_margin=field_margin,
-            minimum_flight_altitude=minimum_flight_altitude,
+            flight_floor=floor_altitude,
             recovery_altitude=recovery_altitude,
+            center_clearance=center_clearance,
             enemy_clearance=enemy_clearance,
             enemy_vertical_range=enemy_vertical_range,
-            center_clearance=center_clearance,
+        )
+        self.duel = DuelPolicy(
+            engage_distance=engage_distance,
+            vertical_threshold=defense_vertical,
+            climb_altitude=base_altitude,
+            maximum_climb=base_altitude,
         )
 
         qos = QoSProfile(
@@ -137,11 +141,9 @@ class GateRaceNode(Node):
             Pose, 'local_pose', self.on_pose, qos_profile_sensor_data)
         self.create_subscription(
             Pose, 'enemy_pose', self.on_enemy, qos_profile_sensor_data)
-        self.create_subscription(
-            Bool, '/game_start', self.on_start, 10)
+        self.create_subscription(Bool, '/game_start', self.on_start, 10)
         self.timer = self.create_timer(0.05, self.on_timer, clock=self.wall_clock)
-        self.get_logger().info(
-            f'GateRaceNode ready for team {self.team_id}.')
+        self.get_logger().info(f'DuelRaceNode ready for team {team_id}.')
 
     def on_status(self, message):
         self.status = message
@@ -155,7 +157,7 @@ class GateRaceNode(Node):
         self.pose = message
         self.pose_at = time.monotonic()
         if self.race_started is None:
-            self.heading = heading_from_quaternion(message.orientation)
+            self.heading = quaternion_heading(message.orientation)
 
     def on_enemy(self, message):
         self.enemy = message
@@ -166,38 +168,38 @@ class GateRaceNode(Node):
             self.game_started = True
             self.phase = 'ground'
             self.race_started = None
-            self.active_logged = False
+            self.race_announced = False
             self.get_logger().info('Game started.')
         elif not message.data and self.game_started:
             self.game_started = False
             self.phase = 'ground'
             self.race_started = None
-            self.active_logged = False
+            self.race_announced = False
             self.get_logger().info('Game stopped.')
 
     def on_timer(self):
         self.send_heartbeat()
         now = time.monotonic()
-        if not self.valid(self.pose_at, now) or self.pose is None:
+        if not self.fresh(self.pose_at, now) or self.pose is None:
             self.publish(None)
             return
         if not self.game_started:
-            self.publish(self.hover_target())
+            self.publish(self.hold_target(self.base_altitude))
             return
-        if (not self.valid(self.status_at, now)
+        if (not self.fresh(self.status_at, now)
                 or self.heartbeat_at is None
                 or now - self.heartbeat_at < 1.0):
-            self.publish(self.hover_target())
+            self.publish(self.hold_target(self.base_altitude))
             return
         if self.phase == 'ground':
-            if self.start_flight(now):
+            if self.issue_start(now):
                 return
         if self.phase == 'climb':
-            self.run_climb()
+            self.climb()
             return
-        self.run_race(now)
+        self.race(now)
 
-    def start_flight(self, now):
+    def issue_start(self, now):
         command = None
         if not self.offboard:
             command = (VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
@@ -207,58 +209,58 @@ class GateRaceNode(Node):
             if self.command_at is None or now - self.command_at >= 0.25:
                 self.send_command(*command)
                 self.command_at = now
-                self.get_logger().info(f'Startup request: command={command[0]}')
-            self.publish(self.hover_target())
+                self.get_logger().info(f'Startup request: {command[0]}')
+            self.publish(self.hold_target(self.base_altitude))
             return True
         if self.offboard and self.armed:
             self.phase = 'climb'
-            self.phase_started = now
             return False
-        self.publish(self.hover_target())
+        self.publish(self.hold_target(self.base_altitude))
         return True
 
-    def run_climb(self):
+    def climb(self):
         position = self.pose.position
         self.publish(self.make_setpoint(
             position.x, position.y, self.takeoff_altitude, self.heading))
-        if position.z >= self.takeoff_height:
+        if position.z >= self.takeoff_threshold:
             self.phase = 'race'
             self.race_started = time.monotonic()
-            if not self.active_logged:
-                self.get_logger().info('Gate race active.')
-                self.active_logged = True
+            if not self.race_announced:
+                self.get_logger().info('Duel race active.')
+                self.race_announced = True
 
-    def run_race(self, now):
+    def race(self, now):
         if self.race_started is None:
             self.race_started = now
-        elapsed = now - self.race_started
         current = self.pose.position
+        enemy = self.current_enemy(now)
         recovery = self.safety.center_recovery(current.x, current.y)
         if recovery is not None:
             self.publish(self.make_setpoint(
                 recovery[0], recovery[1], self.safety.recovery_altitude,
                 self.heading))
             return
-        x, y, z, yaw = self.planner.target(elapsed)
-        enemy = None
-        if self.enemy is not None and self.valid(self.enemy_at, now):
-            enemy = (
-                self.enemy.position.x,
-                self.enemy.position.y,
-                self.enemy.position.z,
-            )
-        x, y = self.safety.avoid_enemy(
-            x, y, (current.x, current.y, current.z), enemy)
+        x, y, orbit_yaw = self.orbit.point(now - self.race_started)
+        own = (current.x, current.y, current.z)
+        x, y = self.safety.avoid_enemy((x, y), own, enemy)
         x, y = self.safety.clamp(x, y)
-        guarded_z = self.safety.guard_altitude(current.z, z)
-        if guarded_z != z:
-            x, y = current.x, current.y
-        self.publish(self.make_setpoint(x, y, guarded_z, yaw))
+        target_altitude = self.safety.altitude_recovery(
+            current.z, self.base_altitude)
+        yaw = self.duel.yaw(own, enemy)
+        if yaw is None:
+            yaw = orbit_yaw
+        self.publish(self.make_setpoint(x, y, target_altitude, yaw))
 
-    def hover_target(self):
+    def current_enemy(self, now):
+        if self.enemy is None or not self.fresh(self.enemy_at, now):
+            return None
+        position = self.enemy.position
+        return position.x, position.y, position.z
+
+    def hold_target(self, altitude):
         position = self.pose.position
         return self.make_setpoint(
-            position.x, position.y, self.cruise_altitude, self.heading)
+            position.x, position.y, altitude, self.heading)
 
     def make_setpoint(self, x, y, z, yaw):
         message = TrajectorySetpoint()
@@ -310,13 +312,13 @@ class GateRaceNode(Node):
     def stamp(self):
         return self.get_clock().now().nanoseconds // 1000
 
-    def valid(self, stamp, now):
+    def fresh(self, stamp, now):
         return stamp is not None and 0.0 <= now - stamp <= 3.0
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = GateRaceNode()
+    node = DuelRaceNode()
     qr_process = None
     try:
         qr_process = subprocess.Popen([
