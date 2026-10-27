@@ -29,6 +29,7 @@ from uav_combat_control.guidance import (
     CenterGuard,
     DuelPolicy,
     OrbitPath,
+    RearGuard,
     SafetyEnvelope,
 )
 
@@ -127,6 +128,10 @@ class DuelRaceNode(Node):
         self.center_guard = CenterGuard(
             trigger_radius=center_clearance,
             escape_radius=center_escape,
+        )
+        self.rear_guard = RearGuard(
+            engage_distance=engage_distance,
+            ceiling_altitude=max(base_altitude, center_clearance + 0.95),
         )
         self.duel = DuelPolicy(
             engage_distance=engage_distance,
@@ -258,9 +263,10 @@ class DuelRaceNode(Node):
         x, y, orbit_yaw = self.orbit.point(now - self.race_started)
         x, y = self.safety.avoid_enemy((x, y), own, enemy)
         x, y = self.safety.clamp(x, y)
-        target_altitude = self.safety.altitude_recovery(
-            current.z, self.base_altitude)
-        yaw = self.duel.yaw(own, enemy)
+        target_altitude = self.rear_guard.altitude(
+            own, enemy,
+            self.safety.altitude_recovery(current.z, self.base_altitude))
+        yaw = self.rear_guard.yaw(own, enemy)
         if yaw is None:
             yaw = orbit_yaw
         self.publish(self.make_setpoint(x, y, target_altitude, yaw))
