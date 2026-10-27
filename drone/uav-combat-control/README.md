@@ -1,62 +1,28 @@
 # uav_combat_control
 
-SIMURO AIC 无人机对抗赛 1v1 策略包（ROS 2 Humble / ament_python）。
+SIMURO AIC 1v1 无人机对抗赛策略包（ROS 2 Humble / ament_python）。
 
-## 策略概述
+## 策略
 
-- 起飞后快速爬升到 1.35 m，满足 1.2 m 最低高度与 15 s 起飞期限；保持低空以与高飞对手错开高度。
-- 使用 `enemy_pose` 估计对手速度和角速度，预测对手未来位置与机头方向。
-- 以对手机尾后方 1.0 m 为目标，采用平滑速度场 + 切向绕行尾追，不频繁切换航点。
-- 近距离自动后退保持识别距离；远离时预测追击；未扫码 20 s 后切换顺时针绕柱积累净圈数。
-- 中心柱排斥、墙体排斥、场地边界钳制、对手碰撞保护、最低高度钳制。
-- 二维码识别：整帧 pyzbar、中心 ROI 放大、自适应阈值三级回退；上报间隔 40 ms，严格低于 30 Hz。
-- 扫码成功后在安全距离悬停 10 s，避免上报后碰撞/撞墙。
+- 绕圈优先：起飞后立即顺时针绕中心柱，优先保证净圈数。
+- 高度错开：对手低于 1.8 m 时飞 2.3 m；对手高飞时保持 1.35 m，避免被尾后相机读取二维码。
+- 二维码扫描节点始终运行，遇到可见二维码会正常上报；飞行路径不因扫码牺牲圈速。
+- 固定入口为 `launch/control.launch.py`，适配平台传入的 `/px4_1`、`/px4_2` namespace。
 
-## 本地实测
-
-- 环境：Ubuntu 22.04 + ROS 2 Humble + Gazebo Classic 11 + PX4 SITL + SIMURO env 2.0.10 / sample 0.3.4。
-- 静止二维码目标：开赛后 **9.00 s** 完成扫码上报。
-- 对官方 sample 0.3.4：开赛后 **8.70 s** 完成扫码上报，官方样例未上报。
-- `pursuit` 模式下调整 1.35 m 低空、1.0 m/s 和 20 s 绕圈兜底后，本地回归 **13.40 s** 完成扫码上报，仍在兜底阈值内。
-- 二维码内容校验：正确读取 `FEDCBA0987654321`。
-- 起飞阶段水平移动与爬升并行，`takeoff_hold_sec` 缩短到 0.5 s，避免先垂直爬升再追击。
-- 默认 `lap_race` 模式：开局即顺时针绕圈，按对手高度自动选择 1.35 m 或 2.3 m 以保持高度差；`pursuit` 模式保留追尾扫码。
-
-## 赛事回放分析
-
-- 练习赛为 300 s 超时、按净圈数判定；回放中出现高空约 2.35 m 的对手，通过高度差规避扫码。
-- 我方保持约 1.35 m 低空，与高飞对手错开；此前 45 圈对 47 圈，圈数差仅 2 圈，主要损失来自扫码追尾时间过长。
-- 因此默认未扫码 20 s 后立即转顺时针绕圈，并提高绕圈速度、收紧绕圈半径，优先保证圈数，再保留前 20 s 的扫码机会。
-
-## 入口
-
-- `launch/control.launch.py`：平台固定入口，启动 `flight_strategy_node`。
-- `flight_strategy_node`：主策略节点，并自动拉起独立的 `qr_scanner_node` 子进程，避免图像解码阻塞飞控。
-- `sample_strategy_node`：兼容入口，行为与 `flight_strategy_node` 相同。
-- `qr_scanner_node`：独立二维码节点，也可单独运行用于调试。
-
-## 主要参数
+## 参数
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `strategy_mode` | `lap_race` | 绕圈优先；设为 `pursuit` 可切回追尾扫码 |
-| `altitude` | `1.35` | ENU 目标高度（低空错开高飞对手） |
-| `minimum_altitude` | `1.3` | 安全最低高度 |
-| `horizontal_velocity` | `1.0` | 绕圈水平速度上限 |
+| `altitude` | `1.35` | 对手高飞时的低空高度 |
+| `lap_high_altitude` | `2.3` | 对手低飞时的高空高度 |
+| `horizontal_velocity` | `1.0` | 绕圈水平速度 |
 | `radius` | `1.3` | 顺时针绕圈半径 |
-| `lap_high_altitude` | `2.3` | 对手低飞时切换的高空高度 |
-| `takeoff_hold_sec` | `0.5` | 到达高度后的保持时间 |
-| `scan_follow_distance` | `1.0` | 尾后目标距离 |
-| `scan_approach_velocity` | `1.0` | 追击水平速度上限 |
-| `scan_minimum_opponent_clearance` | `0.85` | 对手最小净空 |
-| `scan_opponent_slowdown_distance` | `1.6` | 对手减速距离 |
-| `center_obstacle_clearance_radius` | `0.8` | 中心柱净空 |
+| `takeoff_hold_sec` | `0.5` | 起飞后绕圈前等待 |
+| `minimum_altitude` | `1.3` | 安全最低高度 |
+| `maximum_altitude` | `2.5` | 安全最高高度 |
+| `field_half_x` / `field_half_y` | `4.5` / `3.0` | 场地半尺寸 |
 | `field_margin` | `0.6` | 场地边界安全距离 |
-| `enemy_prediction_horizon` | `0.5` | 对手预测时长 |
-| `scan_timeout_sec` | `20.0` | 未扫码转绕圈兜底时间 |
-| `post_submit_hold_sec` | `10.0` | 上报后悬停时间 |
-
-参数在 `launch/control.launch.py` 与 `nodes/flight_strategy_node.py` 中同步维护。
+| `enemy_pose_timeout` | `0.6` | 对手位姿有效期 |
 
 ## 构建
 
@@ -64,22 +30,5 @@ SIMURO AIC 无人机对抗赛 1v1 策略包（ROS 2 Humble / ament_python）。
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select uav_combat_control
 source install/setup.bash
-ros2 pkg executables uav_combat_control
+ros2 launch uav_combat_control control.launch.py namespace:=/px4_1
 ```
-
-## 本地运行
-
-```bash
-ros2 launch uav_combat_control run_match.launch.py headless:=true run_rosbag:=false
-ros2 topic pub --once /game_start std_msgs/msg/Bool "{data: true}"
-```
-
-本地无 Launcher 裁判时，需要额外提供 `local_pose` / `enemy_pose`；官方 Launcher 环境会自动提供这些公开接口。
-
-## 提交
-
-```bash
-python3 tools/pack_submission.py --source . --output uav_combat_control-submission.zip
-```
-
-ZIP 根目录直接包含 `package.xml`、`launch/control.launch.py` 和策略源码。
