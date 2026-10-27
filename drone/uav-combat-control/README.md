@@ -17,9 +17,10 @@ SIMURO AIC 无人机对抗赛 1v1 策略包（ROS 2 Humble / ament_python）。
 - 环境：Ubuntu 22.04 + ROS 2 Humble + Gazebo Classic 11 + PX4 SITL + SIMURO env 2.0.10 / sample 0.3.4。
 - 静止二维码目标：开赛后 **9.00 s** 完成扫码上报。
 - 对官方 sample 0.3.4：开赛后 **8.70 s** 完成扫码上报，官方样例未上报。
-- 调整 1.35 m 低空、1.0 m/s 和 20 s 绕圈兜底后，本地回归 **13.40 s** 完成扫码上报，仍在兜底阈值内。
+- `pursuit` 模式下调整 1.35 m 低空、1.0 m/s 和 20 s 绕圈兜底后，本地回归 **13.40 s** 完成扫码上报，仍在兜底阈值内。
 - 二维码内容校验：正确读取 `FEDCBA0987654321`。
 - 起飞阶段水平移动与爬升并行，`takeoff_hold_sec` 缩短到 0.5 s，避免先垂直爬升再追击。
+- 默认 `lap_race` 模式：开局即顺时针绕圈，按对手高度自动选择 1.35 m 或 2.3 m 以保持高度差；`pursuit` 模式保留追尾扫码。
 
 ## 赛事回放分析
 
@@ -38,11 +39,12 @@ SIMURO AIC 无人机对抗赛 1v1 策略包（ROS 2 Humble / ament_python）。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `strategy_mode` | `pursuit` | 持续追尾扫描 |
+| `strategy_mode` | `lap_race` | 绕圈优先；设为 `pursuit` 可切回追尾扫码 |
 | `altitude` | `1.35` | ENU 目标高度（低空错开高飞对手） |
 | `minimum_altitude` | `1.3` | 安全最低高度 |
 | `horizontal_velocity` | `1.0` | 绕圈水平速度上限 |
 | `radius` | `1.3` | 顺时针绕圈半径 |
+| `lap_high_altitude` | `2.3` | 对手低飞时切换的高空高度 |
 | `takeoff_hold_sec` | `0.5` | 到达高度后的保持时间 |
 | `scan_follow_distance` | `1.0` | 尾后目标距离 |
 | `scan_approach_velocity` | `1.0` | 追击水平速度上限 |

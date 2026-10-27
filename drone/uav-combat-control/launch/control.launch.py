@@ -25,7 +25,7 @@ def generate_launch_description():
                 executable='flight_strategy_node',
                 output='screen',
                 parameters=[{
-                    'strategy_mode': 'pursuit',
+                    'strategy_mode': 'lap_race',
                     'altitude': 1.35,
                     'horizontal_velocity': 1.0,
                     'radius': 1.3,
@@ -49,6 +49,7 @@ def generate_launch_description():
                     'field_margin': 0.6,
                     'minimum_altitude': 1.3,
                     'maximum_altitude': 2.5,
+                    'lap_high_altitude': 2.3,
                     'scan_route_refresh_sec': 0.8,
                     'scan_route_refresh_distance': 0.35,
                     'collision_avoid_distance': 0.55,

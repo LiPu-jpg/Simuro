@@ -44,6 +44,7 @@ from uav_combat_control.behaviors import (
     ScanBehavior,
     orbit_duration_for_laps,
 )
+from uav_combat_control.behaviors.lap_race import LapRaceBehavior
 from uav_combat_control.behaviors.common import (
     FlightTarget,
     enu_to_ned_position,
@@ -61,7 +62,7 @@ class FlightStrategyNode(Node):
             parameter_overrides=[Parameter('use_sim_time', value=True)],
         )
         self.strategy_mode = str(
-            self.declare_parameter('strategy_mode', 'pursuit').value)
+            self.declare_parameter('strategy_mode', 'lap_race').value)
         self.target_altitude = float(
             self.declare_parameter('altitude', 1.35).value)
         self.horizontal_speed = float(
@@ -115,6 +116,8 @@ class FlightStrategyNode(Node):
             self.declare_parameter('minimum_altitude', 1.3).value)
         self.maximum_altitude = float(
             self.declare_parameter('maximum_altitude', 2.5).value)
+        self.lap_high_altitude = float(
+            self.declare_parameter('lap_high_altitude', 2.3).value)
         self.scan_route_refresh_sec = float(
             self.declare_parameter('scan_route_refresh_sec', 0.8).value)
         self.scan_route_refresh_distance = float(
@@ -134,6 +137,13 @@ class FlightStrategyNode(Node):
             circle_radius=self.circle_radius,
             horizontal_speed=self.horizontal_speed,
             orientation_mode=self.orientation_mode,
+        )
+        self.lap_race_behavior = LapRaceBehavior(
+            team_id=self.team_id,
+            circle_radius=self.circle_radius,
+            horizontal_speed=self.horizontal_speed,
+            low_altitude=self.target_altitude,
+            high_altitude=self.lap_high_altitude,
         )
         self.scan_behavior = ScanBehavior(
             team_id=self.team_id,
@@ -231,9 +241,10 @@ class FlightStrategyNode(Node):
 
     def validate_parameters(self):
         if self.strategy_mode not in (
-                'scan_only', 'orbit_then_scan', 'pursuit'):
+                'scan_only', 'orbit_then_scan', 'pursuit', 'lap_race'):
             raise ValueError(
-                'strategy_mode must be scan_only, orbit_then_scan, or pursuit')
+                'strategy_mode must be scan_only, orbit_then_scan, '
+                'pursuit, or lap_race')
         positive_values = {
             'altitude': self.target_altitude,
             'horizontal_velocity': self.horizontal_speed,
@@ -425,6 +436,15 @@ class FlightStrategyNode(Node):
             and now_wall - self.last_submit_at < self.post_submit_hold_sec
         ):
             return self.get_safe_hold_setpoint()
+
+        if self.strategy_mode == 'lap_race':
+            enemy_altitude = None
+            if enemy_fresh:
+                predicted = self.enemy_tracker.predicted(now_wall)
+                if predicted is not None:
+                    enemy_altitude = predicted[0][2]
+            return self.target_to_setpoint(
+                self.lap_race_behavior(flight_elapsed_sec, enemy_altitude))
 
         if (
             self.last_submit_at is None
