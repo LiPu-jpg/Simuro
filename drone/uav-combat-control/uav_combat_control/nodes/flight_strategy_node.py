@@ -25,95 +25,125 @@ from rclpy.qos import (
 )
 from std_msgs.msg import Bool
 
-
-def yaw_from_quaternion(orientation):
-    sin_yaw = 2.0 * (
-        orientation.w * orientation.z + orientation.x * orientation.y)
-    cos_yaw = 1.0 - 2.0 * (
-        orientation.y * orientation.y + orientation.z * orientation.z)
-    return math.atan2(sin_yaw, cos_yaw)
+from uav_combat_control.race import OrbitPlanner, RaceSafety
 
 
-class LapRaceNode(Node):
+def heading_from_quaternion(orientation):
+    return math.atan2(
+        2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
+        1.0 - 2.0 * (
+            orientation.y * orientation.y + orientation.z * orientation.z),
+    )
+
+
+class GateRaceNode(Node):
     def __init__(self):
         super().__init__(
             'flight_strategy_node',
             parameter_overrides=[Parameter('use_sim_time', value=True)],
         )
-        self.low_altitude = float(
-            self.declare_parameter('altitude', 1.35).value)
-        self.high_altitude = float(
-            self.declare_parameter('lap_high_altitude', 2.3).value)
-        self.radius = float(self.declare_parameter('radius', 1.3).value)
-        self.speed = float(
-            self.declare_parameter('horizontal_velocity', 1.0).value)
-        self.takeoff_hold = float(
-            self.declare_parameter('takeoff_hold_sec', 0.5).value)
-        self.minimum_altitude = float(
-            self.declare_parameter('minimum_altitude', 1.3).value)
-        self.maximum_altitude = float(
-            self.declare_parameter('maximum_altitude', 2.5).value)
-        self.field_half_x = float(
+        cruise_altitude = float(
+            self.declare_parameter('race_altitude', 1.35).value)
+        takeoff_altitude = float(
+            self.declare_parameter('takeoff_altitude', 1.5).value)
+        takeoff_height = float(
+            self.declare_parameter('takeoff_height', 1.15).value)
+        orbit_radius = float(
+            self.declare_parameter('orbit_radius', 1.25).value)
+        orbit_speed = float(
+            self.declare_parameter('orbit_speed', 1.0).value)
+        field_half_x = float(
             self.declare_parameter('field_half_x', 4.5).value)
-        self.field_half_y = float(
+        field_half_y = float(
             self.declare_parameter('field_half_y', 3.0).value)
-        self.field_margin = float(
+        field_margin = float(
             self.declare_parameter('field_margin', 0.6).value)
-        self.enemy_timeout = float(
+        minimum_flight_altitude = float(
+            self.declare_parameter('minimum_flight_altitude', 1.05).value)
+        recovery_altitude = float(
+            self.declare_parameter('recovery_altitude', 1.55).value)
+        enemy_clearance = float(
+            self.declare_parameter('enemy_clearance', 0.85).value)
+        enemy_vertical_range = float(
+            self.declare_parameter('enemy_vertical_range', 0.45).value)
+        center_clearance = float(
+            self.declare_parameter('center_clearance', 1.0).value)
+        enemy_timeout = float(
             self.declare_parameter('enemy_pose_timeout', 0.6).value)
-        self.command_retry = 0.25
-        self.feedback_timeout = 3.0
+
+        if takeoff_altitude <= minimum_flight_altitude:
+            raise ValueError('takeoff altitude must exceed recovery altitude')
+        if cruise_altitude <= minimum_flight_altitude:
+            raise ValueError('race altitude must exceed flight minimum')
 
         namespace = self.get_namespace().strip('/')
         self.team_id = 2 if namespace.endswith('2') else 1
-        self.phase = math.pi if self.team_id == 1 else 0.0
-        self.angular_speed = -self.speed / self.radius
-
+        self.takeoff_altitude = takeoff_altitude
+        self.takeoff_height = takeoff_height
+        self.cruise_altitude = cruise_altitude
+        self.enemy_timeout = enemy_timeout
+        self.phase = 'ground'
+        self.phase_started = None
+        self.game_started = False
+        self.status = None
+        self.status_at = None
+        self.armed = False
+        self.offboard = False
+        self.pose = None
+        self.pose_at = None
+        self.enemy = None
+        self.enemy_at = None
+        self.heading = 0.0
+        self.heartbeat_at = None
+        self.command_at = None
+        self.race_started = None
+        self.active_logged = False
         self.wall_clock = Clock(clock_type=ClockType.STEADY_TIME)
-        px4_qos = QoSProfile(
+        self.planner = OrbitPlanner(
+            team_id=self.team_id,
+            radius=orbit_radius,
+            speed=orbit_speed,
+            altitude=cruise_altitude,
+            field_half_x=field_half_x,
+            field_half_y=field_half_y,
+            field_margin=field_margin,
+        )
+        self.safety = RaceSafety(
+            field_half_x=field_half_x,
+            field_half_y=field_half_y,
+            field_margin=field_margin,
+            minimum_flight_altitude=minimum_flight_altitude,
+            recovery_altitude=recovery_altitude,
+            enemy_clearance=enemy_clearance,
+            enemy_vertical_range=enemy_vertical_range,
+            center_clearance=center_clearance,
+        )
+
+        qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        self.offboard_publisher = self.create_publisher(
-            OffboardControlMode, 'fmu/in/offboard_control_mode', px4_qos)
-        self.setpoint_publisher = self.create_publisher(
-            TrajectorySetpoint, 'fmu/in/trajectory_setpoint', px4_qos)
-        self.command_publisher = self.create_publisher(
-            VehicleCommand, 'fmu/in/vehicle_command', px4_qos)
+        self.offboard_pub = self.create_publisher(
+            OffboardControlMode, 'fmu/in/offboard_control_mode', qos)
+        self.setpoint_pub = self.create_publisher(
+            TrajectorySetpoint, 'fmu/in/trajectory_setpoint', qos)
+        self.command_pub = self.create_publisher(
+            VehicleCommand, 'fmu/in/vehicle_command', qos)
         self.create_subscription(
-            VehicleStatus,
-            'fmu/out/vehicle_status_v1',
-            self.status_callback,
-            px4_qos,
-        )
+            VehicleStatus, 'fmu/out/vehicle_status_v1', self.on_status, qos)
         self.create_subscription(
-            Pose, 'local_pose', self.pose_callback, qos_profile_sensor_data)
+            Pose, 'local_pose', self.on_pose, qos_profile_sensor_data)
         self.create_subscription(
-            Pose, 'enemy_pose', self.enemy_callback, qos_profile_sensor_data)
+            Pose, 'enemy_pose', self.on_enemy, qos_profile_sensor_data)
         self.create_subscription(
-            Bool, '/game_start', self.start_callback, 10)
-
-        self.started = False
-        self.status = None
-        self.armed = False
-        self.offboard = False
-        self.pose = None
-        self.posed_at = None
-        self.status_at = None
-        self.enemy = None
-        self.enemy_at = None
-        self.takeoff_yaw = 0.0
-        self.behavior_start = None
-        self.heartbeat_since = None
-        self.last_command_at = None
-        self.active = False
-        self.timer = self.create_timer(0.05, self.tick, clock=self.wall_clock)
+            Bool, '/game_start', self.on_start, 10)
+        self.timer = self.create_timer(0.05, self.on_timer, clock=self.wall_clock)
         self.get_logger().info(
-            f'LapRaceNode started for team {self.team_id}.')
+            f'GateRaceNode ready for team {self.team_id}.')
 
-    def status_callback(self, message):
+    def on_status(self, message):
         self.status = message
         self.status_at = time.monotonic()
         self.armed = (
@@ -121,98 +151,116 @@ class LapRaceNode(Node):
         self.offboard = (
             message.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD)
 
-    def pose_callback(self, message):
+    def on_pose(self, message):
         self.pose = message
-        self.posed_at = time.monotonic()
-        if self.behavior_start is None:
-            self.takeoff_yaw = yaw_from_quaternion(message.orientation)
+        self.pose_at = time.monotonic()
+        if self.race_started is None:
+            self.heading = heading_from_quaternion(message.orientation)
 
-    def enemy_callback(self, message):
+    def on_enemy(self, message):
         self.enemy = message
         self.enemy_at = time.monotonic()
 
-    def start_callback(self, message):
-        if message.data and not self.started:
-            self.started = True
-            self.behavior_start = None
-            self.active = False
+    def on_start(self, message):
+        if message.data and not self.game_started:
+            self.game_started = True
+            self.phase = 'ground'
+            self.race_started = None
+            self.active_logged = False
             self.get_logger().info('Game started.')
-        elif not message.data and self.started:
-            self.started = False
-            self.active = False
-            self.behavior_start = None
+        elif not message.data and self.game_started:
+            self.game_started = False
+            self.phase = 'ground'
+            self.race_started = None
+            self.active_logged = False
             self.get_logger().info('Game stopped.')
 
-    def tick(self):
-        self.publish_offboard_mode()
+    def on_timer(self):
+        self.send_heartbeat()
         now = time.monotonic()
-        if not self.fresh(self.posed_at, now) or self.pose is None:
-            self.publish_setpoint(None)
+        if not self.valid(self.pose_at, now) or self.pose is None:
+            self.publish(None)
             return
-        if not self.started:
-            self.publish_setpoint(self.hover_setpoint())
+        if not self.game_started:
+            self.publish(self.hover_target())
             return
-        if (not self.fresh(self.status_at, now)
-                or self.heartbeat_since is None
-                or now - self.heartbeat_since < 1.0):
-            self.publish_setpoint(self.hover_setpoint())
+        if (not self.valid(self.status_at, now)
+                or self.heartbeat_at is None
+                or now - self.heartbeat_at < 1.0):
+            self.publish(self.hover_target())
             return
+        if self.phase == 'ground':
+            if self.start_flight(now):
+                return
+        if self.phase == 'climb':
+            self.run_climb()
+            return
+        self.run_race(now)
+
+    def start_flight(self, now):
         command = None
         if not self.offboard:
             command = (VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
         elif not self.armed and self.status.pre_flight_checks_pass:
             command = (VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0, 0.0)
         if command is not None:
-            if (self.last_command_at is None
-                    or now - self.last_command_at >= self.command_retry):
-                self.publish_command(*command)
-                self.last_command_at = now
+            if self.command_at is None or now - self.command_at >= 0.25:
+                self.send_command(*command)
+                self.command_at = now
                 self.get_logger().info(f'Startup request: command={command[0]}')
-            self.publish_setpoint(self.hover_setpoint())
-            return
-        if not self.offboard or not self.armed:
-            self.publish_setpoint(self.hover_setpoint())
-            return
-        if self.behavior_start is None:
-            self.behavior_start = now
-        if not self.active:
-            self.get_logger().info('Lap race active.')
-            self.active = True
-        elapsed = now - self.behavior_start
-        if elapsed < self.takeoff_hold:
-            self.publish_setpoint(self.hover_setpoint())
-            return
-        self.publish_setpoint(self.race_setpoint(elapsed))
+            self.publish(self.hover_target())
+            return True
+        if self.offboard and self.armed:
+            self.phase = 'climb'
+            self.phase_started = now
+            return False
+        self.publish(self.hover_target())
+        return True
 
-    def hover_setpoint(self):
+    def run_climb(self):
         position = self.pose.position
-        return self.new_setpoint(
-            position.x,
-            position.y,
-            self.low_altitude,
-            self.takeoff_yaw,
-        )
+        self.publish(self.make_setpoint(
+            position.x, position.y, self.takeoff_altitude, self.heading))
+        if position.z >= self.takeoff_height:
+            self.phase = 'race'
+            self.race_started = time.monotonic()
+            if not self.active_logged:
+                self.get_logger().info('Gate race active.')
+                self.active_logged = True
 
-    def race_setpoint(self, elapsed):
-        enemy_altitude = None
-        now = time.monotonic()
-        if self.enemy is not None and self.fresh(self.enemy_at, now):
-            enemy_altitude = self.enemy.position.z
-        if enemy_altitude is not None and enemy_altitude <= 1.8:
-            altitude = self.high_altitude
-        else:
-            altitude = self.low_altitude
-        theta = self.phase + self.angular_speed * elapsed
-        x = self.radius * math.cos(theta)
-        y = self.radius * math.sin(theta)
-        limit_x = self.field_half_x - self.field_margin
-        limit_y = self.field_half_y - self.field_margin
-        x = max(-limit_x, min(limit_x, x))
-        y = max(-limit_y, min(limit_y, y))
-        altitude = max(self.minimum_altitude, min(self.maximum_altitude, altitude))
-        return self.new_setpoint(x, y, altitude, theta)
+    def run_race(self, now):
+        if self.race_started is None:
+            self.race_started = now
+        elapsed = now - self.race_started
+        current = self.pose.position
+        recovery = self.safety.center_recovery(current.x, current.y)
+        if recovery is not None:
+            self.publish(self.make_setpoint(
+                recovery[0], recovery[1], self.safety.recovery_altitude,
+                self.heading))
+            return
+        x, y, z, yaw = self.planner.target(elapsed)
+        enemy = None
+        if self.enemy is not None and self.valid(self.enemy_at, now):
+            enemy = (
+                self.enemy.position.x,
+                self.enemy.position.y,
+                self.enemy.position.z,
+            )
+        x, y = self.safety.avoid_enemy(
+            x, y, (current.x, current.y, current.z), enemy)
+        x, y = self.safety.clamp(x, y)
+        guarded_z = self.safety.guard_altitude(current.z, z)
+        if guarded_z != z:
+            x, y = current.x, current.y
+        self.publish(self.make_setpoint(x, y, guarded_z, yaw))
 
-    def new_setpoint(self, x, y, z, yaw):
+    def hover_target(self):
+        position = self.pose.position
+        return self.make_setpoint(
+            position.x, position.y, self.cruise_altitude, self.heading)
+
+    def make_setpoint(self, x, y, z, yaw):
         message = TrajectorySetpoint()
         message.position = [float(x), float(-y), float(-z)]
         message.velocity = [math.nan, math.nan, math.nan]
@@ -220,10 +268,10 @@ class LapRaceNode(Node):
         message.jerk = [math.nan, math.nan, math.nan]
         message.yaw = float(-yaw)
         message.yawspeed = math.nan
-        message.timestamp = self.timestamp()
+        message.timestamp = self.stamp()
         return message
 
-    def publish_setpoint(self, message):
+    def publish(self, message):
         if message is None:
             message = TrajectorySetpoint()
             message.position = [math.nan, math.nan, math.nan]
@@ -232,21 +280,21 @@ class LapRaceNode(Node):
             message.jerk = [math.nan, math.nan, math.nan]
             message.yaw = math.nan
             message.yawspeed = math.nan
-            message.timestamp = self.timestamp()
-        self.setpoint_publisher.publish(message)
+            message.timestamp = self.stamp()
+        self.setpoint_pub.publish(message)
 
-    def publish_offboard_mode(self):
-        if self.heartbeat_since is None:
-            self.heartbeat_since = time.monotonic()
+    def send_heartbeat(self):
+        if self.heartbeat_at is None:
+            self.heartbeat_at = time.monotonic()
         message = OffboardControlMode()
         message.position = True
         message.velocity = False
         message.acceleration = False
         message.attitude = False
-        message.timestamp = self.timestamp()
-        self.offboard_publisher.publish(message)
+        message.timestamp = self.stamp()
+        self.offboard_pub.publish(message)
 
-    def publish_command(self, command, param1=0.0, param2=0.0):
+    def send_command(self, command, param1=0.0, param2=0.0):
         message = VehicleCommand()
         message.command = command
         message.param1 = param1
@@ -256,19 +304,19 @@ class LapRaceNode(Node):
         message.source_system = 1
         message.source_component = 1
         message.from_external = True
-        message.timestamp = self.timestamp()
-        self.command_publisher.publish(message)
+        message.timestamp = self.stamp()
+        self.command_pub.publish(message)
 
-    def timestamp(self):
+    def stamp(self):
         return self.get_clock().now().nanoseconds // 1000
 
-    def fresh(self, stamp, now):
-        return stamp is not None and 0.0 <= now - stamp <= self.feedback_timeout
+    def valid(self, stamp, now):
+        return stamp is not None and 0.0 <= now - stamp <= 3.0
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = LapRaceNode()
+    node = GateRaceNode()
     qr_process = None
     try:
         qr_process = subprocess.Popen([
